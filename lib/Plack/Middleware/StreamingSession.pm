@@ -10,7 +10,7 @@ use SimpleStore::Object;
 
 use parent qw/Plack::Middleware/;
 
-use constant DEBUG => 1;
+use constant DEBUG => 0;
 
 sub prepare_app {
     my $self = shift;
@@ -20,7 +20,7 @@ sub prepare_app {
 
     $self->{store} = SimpleStore::Object->new($self->{ssdir});
 
-    warn("key is $self->{key}");
+    warn("key is $self->{key}") if DEBUG;
 
     $self->{cookie_extractor} = Plack::Session::State::Cookie->new( session_key => $self->{key} );
 }
@@ -29,46 +29,50 @@ sub call {
     my ($self, $env) = @_;
 
     warn("entering StreamingSession::call") if DEBUG;
-    warn(Dumper $env);
 
+    # FIXME make short-circuit paths part of instantiation options
+    if ($env->{PATH_INFO} eq "/favicon.ico") {
+        return sub { my $respond = shift; $respond->(); }
+    }
 
-    $self->get_session($env, sub {
-        my ($session, $id) = @_;
+    return sub {
+        my $respond = shift;
+        warn("entering StreamingSession::call callback") if DEBUG;
 
-        if ($id && $session) {
-            warn("pulled session $id from state (cookie)") if DEBUG;
-            $env->{'psgix.session'} = $session;
-         } else {
-            $id = $self->{cookie_extractor}->generate($env);
-            warn("id is $id here") if DEBUG;
-            $env->{'psgix.session'} = {};
-        }
+        $self->get_session($env, sub {
+            my ($session, $id) = @_;
 
-        # stick the session hash into the environment to pass to the app
-        $env->{'psgix.session'} = $session;
-        $env->{'psgix.session.options'} = { id => $id };
-
-        warn("modified environment to add session id.") if DEBUG;
-
-        my $res = $self->app->($env);
-        warn("pulled res cb from app, its ref is " . ref $res) if DEBUG;
-
-        if (ref $res eq 'ARRAY') {
-            warn("called with array");
-            die("StreamingSession works only in a streaming configuration. Please use any other session module.");
-        }
-
-        return sub {
-            my $respond = shift;
-            warn("entering StreamingSession::call callback") if DEBUG;
-
+	        if ($id && $session) {
+	            warn("pulled session $id from state (cookie)") if DEBUG;
+	            $env->{'psgix.session'} = $session;
+	         } else {
+	            $id = $self->{cookie_extractor}->generate($env);
+	            warn("id is $id here") if DEBUG;
+	            $env->{'psgix.session'} = {};
+	        }
+	
+	        # stick the session hash into the environment to pass to the app
+	        $env->{'psgix.session'} = $session;
+	        $env->{'psgix.session.options'} = { id => $id };
+	
+	        warn("modified environment to add session id.") if DEBUG;
+	
+	        my $res = $self->app->($env);
+	        warn("pulled res cb from app, its ref is " . ref $res) if DEBUG;
+	
+	        if (ref $res eq 'ARRAY') {
+	            warn("called with array");
+	            die("StreamingSession works only in a streaming configuration. Please use any other session module.");
+	        }
+	
             $res->(sub {
                 # this is what our app calls when it's done,
                 # so it's our chance to munge the headers as we see fit
                 $self->finalize($env, $_[0], sub { $respond->(@_) } );
             });
-        }
-    });
+
+        });
+    };
 }
 
 # stolen
@@ -133,6 +137,7 @@ sub get_session {
         my $s = shift;
         warn("session fetched") if DEBUG;
         warn(Dumper $s) if DEBUG;
+        if (not(defined($s))) { $s = {}; }
         $cb->($s, $id);
     });
 }
